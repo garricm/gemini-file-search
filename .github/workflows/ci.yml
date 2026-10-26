@@ -1,0 +1,22 @@
+name: Rust checks
+on: [push, pull_request]
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --locked
+      - run: cargo build --locked
+      - run: python3 tests/stdio_smoke.py
+      - run: python3 tests/tui_smoke.py
+      - run: python3 -m unittest discover -s tests -p 'test_homebrew_setup.py'
+      - name: Install dist
+        shell: bash
+        run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.33.1/cargo-dist-installer.sh | sh
+      - name: Examine the release files
+        run: python3 scripts/configure_homebrew.py --repository garricm/gemini-file-search --tap garricm/homebrew-tap --check

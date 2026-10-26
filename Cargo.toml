@@ -1,0 +1,35 @@
+[package]
+name = "gemini-file-search-mcp"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "A terminal interface, CLI, and MCP server for Gemini File Search"
+license = "MIT"
+publish = false
+default-run = "gemini-file-search-mcp"
+repository = "https://github.com/garricm/gemini-file-search"
+homepage = "https://github.com/garricm/gemini-file-search"
+
+[dependencies]
+reqwest = { version = "0.12.28", default-features = false, features = ["json", "rustls-tls"] }
+rmcp = { version = "=3.7.0", features = ["server", "transport-io"] }
+schemars = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std", "io-util", "fs", "time", "sync"] }
+clap = { version = "4.5", features = ["derive"] }
+ratatui = { version = "=0.30.2", default-features = false, features = ["crossterm_0_29", "unstable-rendered-line-info"] }
+crossterm = "0.29"
+
+[dev-dependencies]
+axum = "0.8"
+tempfile = "3"
+
+# Binary distribution does not publish this crate to crates.io.
+[package.metadata.dist]
+dist = true
+formula = "gfs"
+
+[profile.dist]
+inherits = "release"
+lto = "thin"

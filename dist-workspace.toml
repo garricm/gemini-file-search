@@ -1,0 +1,19 @@
+[workspace]
+members = ["cargo:."]
+
+[dist]
+cargo-dist-version = "0.33.1"
+ci = "github"
+installers = ["homebrew"]
+targets = [
+  "aarch64-apple-darwin",
+  "x86_64-apple-darwin",
+  "aarch64-unknown-linux-gnu",
+  "x86_64-unknown-linux-gnu",
+]
+tap = "garricm/homebrew-tap"
+publish-jobs = ["homebrew"]
+# Pull requests do not publish files.
+pr-run-mode = "plan"
+# The setup script compares the workflow with the generator output.
+allow-dirty = ["ci"]
