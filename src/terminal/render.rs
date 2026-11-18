@@ -392,8 +392,8 @@ fn footer_view(frame: &mut Frame, area: Rect, app: &App) {
 fn dialog_view(frame: &mut Frame, area: Rect, app: &App, dialog: &Dialog) {
     let (title, description, danger) = match dialog {
         Dialog::Create => (" NEW STORE ", "Enter a store name. Each request creates a new store.".into(), false),
-        Dialog::Upload => (" UPLOAD DOCUMENT ", if app.demo { "Enter a .md, .txt, or .pdf path. Demo mode uses sample data.".into() }
-            else { "Enter a file path in GEMINI_UPLOAD_ROOT. The maximum size is 10 MiB. Press Enter to upload the file.".into() }, false),
+        Dialog::Upload => (" UPLOAD ", if app.demo { "Enter a .md, .txt, or .pdf path. Demo mode uses sample data.".into() }
+            else { "Enter a file or folder path. Use . for all eligible files in GEMINI_UPLOAD_ROOT.".into() }, false),
         Dialog::Ask => (" ENTER A QUESTION ", format!("Enter a question about {}. {}", app.active.as_ref().map(|item| item.label.as_str()).unwrap_or("this store"),
             if app.demo { "Demo mode returns a sample answer." } else { "Press Enter to send the question to Gemini." }), false),
         Dialog::Search => (" FILTER DOCUMENTS ", "Enter a document name filter. Press Enter to apply the filter. Press Esc to cancel.".into(), false),
@@ -435,7 +435,7 @@ fn dialog_view(frame: &mut Frame, area: Rect, app: &App, dialog: &Dialog) {
             "↑ ↓ / j k        Select an item or scroll",
             "Enter            Open a store or submit text",
             "n                Create a store",
-            "u                Upload a file",
+            "u                Upload a file or folder",
             "a                Enter a question",
             "/                Filter the names",
             "Esc              Close a dialog or clear a filter",

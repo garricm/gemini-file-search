@@ -104,3 +104,25 @@ fn timeout_is_validated_before_configuration_or_network() {
             .contains("invalid value")
     );
 }
+
+#[test]
+fn uploading_an_empty_directory_reports_no_eligible_files() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("empty.md"), "").unwrap();
+    std::fs::write(root.path().join("unsupported.csv"), "data").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_gfs"))
+        .args(["upload", ".", "--store", "fileSearchStores/test", "--json"])
+        .env("GEMINI_FILE_SEARCH_API_KEY", "synthetic-cli-test-key")
+        .env("GEMINI_UPLOAD_ROOT", root.path())
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let value: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert!(
+        value["error"]
+            .as_str()
+            .unwrap()
+            .contains("no eligible files")
+    );
+}

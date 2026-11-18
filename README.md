@@ -71,7 +71,7 @@ The app uses this store for file uploads and questions.
 | Arrow keys / `j` / `k` | Select an item or scroll the answer. |
 | `Enter` | Open the selected store or submit the input. |
 | `n` | Create a store. |
-| `u` | Upload a file. |
+| `u` | Upload a file or folder. Enter `.` to upload the whole root. |
 | `a` | Enter a question. |
 | `/` | Filter the loaded document names. |
 | `Esc` | Close the dialog or remove the filter. |
@@ -101,6 +101,7 @@ Replace the sample resource names in these commands.
 gfs stores create --name "Documents"
 gfs stores list --json
 gfs upload guide.pdf --store fileSearchStores/your-store --wait
+gfs upload . --store fileSearchStores/your-store --wait
 gfs documents list --store fileSearchStores/your-store
 gfs ask --store fileSearchStores/your-store "What does the guide specify?"
 gfs documents delete fileSearchStores/your-store/documents/your-document
@@ -122,6 +123,12 @@ If a response includes `nextPageToken`, use `--page-token` to load the next page
 - Empty files are not permitted.
 - All files must stay in `GEMINI_UPLOAD_ROOT`, including symbolic-link targets.
 
+Use a directory path to upload its eligible files recursively. Use `.` for all
+eligible files in `GEMINI_UPLOAD_ROOT`. Directory uploads skip symbolic links
+encountered during the scan, unsupported formats, empty files, and files over 10 MiB.
+The app uploads files in path order and stops at the first failure or indexing timeout.
+Check the upload results before rerunning a batch to avoid duplicates.
+
 Uploads and questions send data to Google.
 API charges can apply.
 
@@ -130,7 +137,7 @@ API charges can apply.
 Google indexes a file after the upload.
 An operation ID identifies this process.
 Use `--wait` to wait for the result.
-The default time limit is 300 seconds.
+The default time limit is 300 seconds per file.
 Use `--timeout` to set a limit from 1 to 3600 seconds.
 
 To continue a wait, use the saved operation ID:

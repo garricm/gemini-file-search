@@ -45,12 +45,13 @@ enum Command {
         #[command(subcommand)]
         command: DocumentCommand,
     },
-    /// Upload a local .md, .txt, or .pdf file from GEMINI_UPLOAD_ROOT.
+    /// Upload a file or recursively upload eligible files in a directory.
     Upload {
+        /// Path in GEMINI_UPLOAD_ROOT. Use "." for the entire root.
         path: String,
         #[arg(long)]
         store: String,
-        /// Wait for indexing. The app does not upload the file again.
+        /// Wait for each file to finish indexing.
         #[arg(long)]
         wait: bool,
         #[arg(long, default_value_t = 300, value_parser = clap::value_parser!(u64).range(1..=3600))]
@@ -222,6 +223,30 @@ async fn run(cli: Cli) -> Result<u8, String> {
             wait,
             timeout,
         } => {
+            if let Some(report) = api
+                .upload_directory(&store, &path, wait.then_some(timeout), |index, total, operation| {
+                    if !cli.json {
+                        match operation {
+                            Some(name) => eprintln!("Indexing {index}/{total} · {}", terminal::clean(name)),
+                            None => eprintln!("Uploading {index}/{total}…"),
+                        }
+                    }
+                })
+                .await
+                .map_err(|error| error.to_string())?
+            {
+                print_value(&json!(report), cli.json);
+                return Ok(if report.error.is_some() {
+                    1
+                } else if report.timed_out {
+                    if !cli.json {
+                        eprintln!("Indexing is not complete. Continue with: gfs operation <operation-name> --wait");
+                    }
+                    2
+                } else {
+                    0
+                });
+            }
             let operation = api
                 .upload_file(&store, &path)
                 .await

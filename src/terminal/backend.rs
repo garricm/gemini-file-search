@@ -1,4 +1,4 @@
-use gemini_file_search_mcp::api::{Answer, Citation, Gemini};
+use gemini_file_search_mcp::api::{Answer, Citation, DirectoryUpload, Gemini};
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
@@ -41,12 +41,30 @@ pub enum Action {
 }
 
 pub enum Update {
-    Stores { value: Value, append: bool },
-    Documents { value: Value, append: bool },
+    Stores {
+        value: Value,
+        append: bool,
+    },
+    Documents {
+        value: Value,
+        append: bool,
+    },
     Created(Value),
     UploadStarted(Value),
     Uploaded(Value),
-    Answer { question: String, answer: Answer },
+    DirectoryUploadProgress {
+        index: usize,
+        total: usize,
+        operation: Option<String>,
+    },
+    DirectoryUploaded {
+        report: DirectoryUpload,
+        documents: Result<Option<Value>, String>,
+    },
+    Answer {
+        question: String,
+        answer: Answer,
+    },
     DeletedDocument(String),
     DeletedStore(String),
 }
@@ -127,6 +145,32 @@ async fn execute_live(api: Gemini, action: Action, sender: &UnboundedSender<Mess
             Update::Created(api.create_store(&name).await.map_err(|e| e.to_string())?)
         }
         Action::Upload { store, path } => {
+            if let Some(report) = api
+                .upload_directory(&store, &path, Some(300), |index, total, operation| {
+                    let _ = sender.send(Ok(Update::DirectoryUploadProgress {
+                        index,
+                        total,
+                        operation: operation.map(str::to_owned),
+                    }));
+                })
+                .await
+                .map_err(|e| e.to_string())?
+            {
+                let indexed = report.files.iter().any(|file| {
+                    file.operation.as_ref().is_some_and(|operation| {
+                        operation["done"] == true && operation["error"].is_null()
+                    })
+                });
+                let documents = if indexed {
+                    api.list_documents(&store, None)
+                        .await
+                        .map(Some)
+                        .map_err(|e| e.to_string())
+                } else {
+                    Ok(None)
+                };
+                return Ok(Update::DirectoryUploaded { report, documents });
+            }
             let operation = api
                 .upload_file(&store, &path)
                 .await

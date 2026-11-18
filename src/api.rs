@@ -22,6 +22,20 @@ pub struct Answer {
     pub citations: Vec<Citation>,
 }
 
+#[derive(Serialize)]
+pub struct DirectoryUpload {
+    pub total: usize,
+    pub files: Vec<DirectoryUploadFile>,
+    pub error: Option<String>,
+    pub timed_out: bool,
+}
+
+#[derive(Serialize)]
+pub struct DirectoryUploadFile {
+    pub path: String,
+    pub operation: Option<Value>,
+}
+
 // Keep API keys, file content, URLs, and provider error bodies out of error messages.
 #[derive(Debug)]
 pub struct Error(pub String);
@@ -228,23 +242,117 @@ impl Gemini {
     }
 
     pub async fn upload_file(&self, store_name: &str, path: &str) -> Result<Value> {
-        validate_store(store_name)?;
-        let candidate = self
-            .root
-            .join(path)
-            .canonicalize()
-            .map_err(|_| invalid("The app cannot find the file in GEMINI_UPLOAD_ROOT."))?;
-        if !candidate.starts_with(&self.root) {
+        self.upload_local_file(store_name, Path::new(path)).await
+    }
+
+    /// Return None for a single-file target so callers can keep their existing output.
+    pub async fn upload_directory(
+        &self,
+        store: &str,
+        path: &str,
+        wait: Option<u64>,
+        mut progress: impl FnMut(usize, usize, Option<&str>),
+    ) -> Result<Option<DirectoryUpload>> {
+        validate_store(store)?;
+        if path.is_empty() {
             return Err(invalid(
-                "The file must stay in GEMINI_UPLOAD_ROOT, including symbolic-link targets.",
+                "Enter a file or directory path. Use . for the upload root.",
             ));
         }
-        let mime = match candidate.extension().and_then(|ext| ext.to_str()) {
-            Some("md") => "text/markdown",
-            Some("txt") => "text/plain",
-            Some("pdf") => "application/pdf",
-            _ => return Err(invalid("Use a .md, .txt, or .pdf file.")),
+        let target = self.upload_path(Path::new(path)).await?;
+        if !target.is_dir() {
+            return Ok(None);
+        }
+
+        let mut paths = Vec::new();
+        let mut directories = vec![target];
+        while let Some(directory) = directories.pop() {
+            let scan_error = |_| invalid("The app cannot read the upload directory.");
+            let mut entries = tokio::fs::read_dir(directory).await.map_err(scan_error)?;
+            while let Some(entry) = entries.next_entry().await.map_err(scan_error)? {
+                let kind = entry.file_type().await.map_err(scan_error)?;
+                let path = entry.path();
+                if kind.is_dir() {
+                    directories.push(path);
+                } else if kind.is_file() && upload_mime(&path).is_some() {
+                    let size = entry.metadata().await.map_err(scan_error)?.len();
+                    if (1..=MAX_FILE_BYTES).contains(&size) {
+                        paths.push(path);
+                    }
+                }
+            }
+        }
+        if paths.is_empty() {
+            return Err(invalid(
+                "The directory has no eligible files. Use nonempty .md, .txt, or .pdf files up to 10 MiB.",
+            ));
+        }
+        paths.sort();
+        let mut report = DirectoryUpload {
+            total: paths.len(),
+            files: Vec::new(),
+            error: None,
+            timed_out: false,
         };
+        for path in paths {
+            let index = report.files.len() + 1;
+            progress(index, report.total, None);
+            let mut file = DirectoryUploadFile {
+                path: path
+                    .strip_prefix(&self.root)
+                    .unwrap_or(&path)
+                    .to_string_lossy()
+                    .into_owned(),
+                operation: None,
+            };
+            match self.upload_local_file(store, &path).await {
+                Ok(operation) => file.operation = Some(operation),
+                Err(error) => report.error = Some(error.to_string()),
+            }
+            if let (Some(seconds), Some(operation)) = (wait, &file.operation) {
+                progress(index, report.total, operation["name"].as_str());
+                match self.wait_for_operation(operation.clone(), seconds).await {
+                    Ok(operation) => file.operation = Some(operation),
+                    Err(error) => report.error = Some(error.to_string()),
+                }
+            }
+            if let Some(operation) = &file.operation {
+                if operation.get("error").is_some_and(|error| !error.is_null()) {
+                    report.error = Some(
+                        "Indexing failed. Examine the operation before uploading the file again."
+                            .into(),
+                    );
+                } else if wait.is_some() && report.error.is_none() && operation["done"] != true {
+                    report.timed_out = true;
+                }
+            }
+            report.files.push(file);
+            if report.error.is_some() || report.timed_out {
+                break;
+            }
+        }
+        Ok(Some(report))
+    }
+
+    async fn upload_path(&self, path: &Path) -> Result<PathBuf> {
+        let candidate = tokio::fs::canonicalize(self.root.join(path))
+            .await
+            .map_err(|_| {
+                invalid("The app cannot find the file or directory in GEMINI_UPLOAD_ROOT.")
+            })?;
+        if !candidate.starts_with(&self.root) {
+            return Err(invalid(
+                "The path must stay in GEMINI_UPLOAD_ROOT, including symbolic-link targets.",
+            ));
+        }
+        Ok(candidate)
+    }
+
+    async fn upload_local_file(&self, store_name: &str, path: &Path) -> Result<Value> {
+        validate_store(store_name)?;
+        let candidate = self.upload_path(path).await?;
+        let mime =
+            upload_mime(&candidate).ok_or_else(|| invalid("Use a .md, .txt, or .pdf file."))?;
         let file = tokio::fs::File::open(&candidate)
             .await
             .map_err(|_| invalid("The app cannot open the file."))?;
@@ -323,6 +431,15 @@ impl Gemini {
             })?;
         validate_operation(name)?;
         Ok(operation)
+    }
+}
+
+fn upload_mime(path: &Path) -> Option<&'static str> {
+    match path.extension().and_then(|ext| ext.to_str()) {
+        Some("md") => Some("text/markdown"),
+        Some("txt") => Some("text/plain"),
+        Some("pdf") => Some("application/pdf"),
+        _ => None,
     }
 }
 
@@ -596,6 +713,79 @@ mod tests {
             true
         );
         assert_eq!(state.seen.lock().unwrap().len(), 5);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn directory_uploads_eligible_files_in_order_and_keeps_pending_operation() {
+        let root = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        for folder in ["z", "a with spaces"] {
+            let directory = root.path().join(folder);
+            std::fs::create_dir(&directory).unwrap();
+            std::fs::write(directory.join("guide.md"), "# Approved guide\n").unwrap();
+        }
+        std::fs::write(root.path().join("empty.md"), "").unwrap();
+        std::fs::write(root.path().join("unsupported.csv"), "data").unwrap();
+        std::fs::File::create(root.path().join("large.pdf"))
+            .unwrap()
+            .set_len(MAX_FILE_BYTES + 1)
+            .unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(root.path().join("z/guide.md"), root.path().join("copy.md"))
+                .unwrap();
+            std::os::unix::fs::symlink(outside.path(), root.path().join("external")).unwrap();
+        }
+        let (api, state, server) = mock_api(root.path(), false).await;
+        let mut progress = Vec::new();
+        let report = api
+            .upload_directory("fileSearchStores/test", ".", None, |index, total, _| {
+                progress.push((index, total));
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(report.error.is_none());
+        assert_eq!(progress, vec![(1, 2), (2, 2)]);
+        assert_eq!(
+            Path::new(&report.files[0].path),
+            Path::new("a with spaces/guide.md")
+        );
+        assert_eq!(Path::new(&report.files[1].path), Path::new("z/guide.md"));
+        assert_eq!(state.seen.lock().unwrap().len(), 4);
+
+        let report = api
+            .upload_directory("fileSearchStores/test", "z", None, |_, _, _| {})
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(report.total, 1);
+        assert_eq!(Path::new(&report.files[0].path), Path::new("z/guide.md"));
+
+        let report = api
+            .upload_directory("fileSearchStores/test", ".", Some(0), |_, _, _| {})
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(report.timed_out);
+        assert_eq!(report.total, 2);
+        assert_eq!(report.files.len(), 1);
+        assert_eq!(
+            report.files[0].operation.as_ref().unwrap()["name"],
+            "fileSearchStores/test/upload/operations/upload-1"
+        );
+        assert!(
+            api.upload_directory(
+                "fileSearchStores/test",
+                outside.path().to_str().unwrap(),
+                None,
+                |_, _, _| {}
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(state.seen.lock().unwrap().len(), 8);
         server.abort();
     }
 

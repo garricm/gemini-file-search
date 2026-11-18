@@ -211,7 +211,7 @@ impl App {
             Action::Stores(_) => "Wait for the store list…".into(),
             Action::Documents { .. } => "Wait for the document list…".into(),
             Action::Create(_) => "Wait for the new store…".into(),
-            Action::Upload { .. } => "Wait for the file upload…".into(),
+            Action::Upload { .. } => "Preparing upload…".into(),
             Action::Ask { .. } => "Wait for the answer…".into(),
             Action::DeleteDocument(_) | Action::DeleteStore(_) => "Wait for the deletion…".into(),
         };
@@ -279,11 +279,7 @@ impl App {
                 }
             }
             Update::Documents { value, append } => {
-                merge_items(&mut self.documents, &value, "documents", append);
-                self.documents_next = next_page(&value);
-                self.document_cursor = self
-                    .document_cursor
-                    .min(self.visible_documents().len().saturating_sub(1));
+                self.update_documents(&value, append);
                 self.status = format!(
                     "{} documents available · Press a to enter a question",
                     self.documents.len()
@@ -328,6 +324,45 @@ impl App {
                     }
                 }
             }
+            Update::DirectoryUploadProgress {
+                index,
+                total,
+                operation,
+            } => {
+                let action = if operation.is_some() {
+                    "Indexing"
+                } else {
+                    "Uploading"
+                };
+                self.operation = operation;
+                self.status = format!("{action} file {index}/{total}…");
+                self.busy = true;
+            }
+            Update::DirectoryUploaded { report, documents } => {
+                let total = report.total;
+                if report.error.is_some() || report.timed_out {
+                    let last = report.files.last().expect("failed upload has a file");
+                    let completed = report.files.len() - 1;
+                    self.error = report.error.is_some();
+                    let reason = report.error.as_deref().unwrap_or("Indexing timed out.");
+                    self.status = format!(
+                        "{completed}/{total} indexed · {} · {}",
+                        clean(&last.path),
+                        clean(reason)
+                    );
+                } else {
+                    self.status = format!("Google indexed {total} documents.");
+                }
+                match documents {
+                    Ok(Some(value)) => self.update_documents(&value, false),
+                    Ok(None) => {}
+                    Err(error) => {
+                        self.error = true;
+                        self.status
+                            .push_str(&format!(" Refresh failed. {}", clean(&error)));
+                    }
+                }
+            }
             Update::Answer { question, answer } => {
                 self.status = format!("Answer available · {} sources", answer.citations.len());
                 self.answer = Some((question, answer));
@@ -358,6 +393,14 @@ impl App {
                 }
             }
         }
+    }
+
+    fn update_documents(&mut self, value: &Value, append: bool) {
+        merge_items(&mut self.documents, value, "documents", append);
+        self.documents_next = next_page(value);
+        self.document_cursor = self
+            .document_cursor
+            .min(self.visible_documents().len().saturating_sub(1));
     }
 
     fn submit(&mut self, backend: &Backend, sender: &UnboundedSender<Message>) {
